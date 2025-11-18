@@ -1,0 +1,17 @@
+name: "adverse_event_pipeline"
+version: "1.0.0"
+config-version: 2
+profile: "adverse_event_pipeline"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analysis"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  +materialized: view

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# macOS
+.DS_Store
+
+# Logs and runtime
+*.log
+streamlit.log
+output/
+
+# IDEs
+.vscode/
+.idea/
+
+# Secrets
+.env
+
+# Byte-compiled / optimized / DLL files
+*.so
+
+# pytest cache
+.pytest_cache/

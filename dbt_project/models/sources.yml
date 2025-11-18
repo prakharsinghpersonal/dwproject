@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: public # This is your Snowflake schema name
+    schema: PUBLIC
+    database: PHARMACOVIGILANCE
+    tables:
+      - name: BRONZE_DRUG
+      - name: BRONZE_OUTCOME

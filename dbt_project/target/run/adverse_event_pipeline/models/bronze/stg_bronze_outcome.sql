@@ -1,0 +1,23 @@
+
+  create or replace   view PHARMACOVIGILANCE.PUBLIC.stg_bronze_outcome
+  
+  
+  
+  
+  as (
+    
+
+
+
+SELECT
+    primaryid,
+    outcome_concept_id,
+    PT AS REACTION_NAME
+FROM
+    PHARMACOVIGILANCE.PUBLIC.BRONZE_OUTCOME
+WHERE
+    outcome_concept_id IS NOT NULL
+    AND PT IS NOT NULL
+    AND UPPER(PT) NOT IN ('DEVICE MALFUNCTION', 'INCORRECT DOSE ADMINISTERED', 'PRODUCT QUALITY ISSUE', 'ADMINISTRATION ERROR', 'DRUG INTOLERANCE')
+  );
+
