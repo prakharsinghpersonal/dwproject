@@ -1,55 +1,110 @@
-# 'version' attribute is removed
+
+x-airflow-env: &airflow_env
+
+  _AIRFLOW_EIP_PYTHON_PACKAGES: "apache-airflow-providers-snowflake apache-airflow-providers-dbt-cloud apache-airflow-providers-docker"
+
+
+  _AIRFLOW_WWW_USER_USERNAME: "admin"
+  _AIRFLOW_WWW_USER_PASSWORD: "admin"
+
+
+  AIRFLOW__CORE__EXECUTOR: "LocalExecutor"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__FERNET_KEY: "yHA5esoGC3jwkyWu-cTv_iTQeioe1tXanl3RtDVnOBk="
+
+
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@postgres/airflow"
+
 services:
   airflow-1:
     image: apache/airflow:2.9.0
     container_name: airflow-1
-    networks:
-      - default
+    networks: [default]
+
+
+    env_file:
+      - .env
     environment:
-      # Installs all required providers
-      - _AIRFLOW_EIP_PYTHON_PACKAGES=apache-airflow-providers-snowflake apache-airflow-providers-dbt-cloud apache-airflow-providers-docker
-      
-      # Admin User Credentials
-      - _AIRFLOW_WWW_USER_USERNAME=admin
-      - _AIRFLOW_WWW_USER_PASSWORD=admin
-      
-      # Airflow Configuration
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      
-      # ‼️ FIX 1: Point to the correct service name 'postgres'
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      
-      - AIRFLOW__CORE__LOAD_EXAMPLES=false
-      - AIRFLOW__CORE__FERNET_KEY=yHA5esoGC3jwkyWu-cTv_iTQeioe1tXanl3RtDVnOBk=
+      <<: *airflow_env
+
     volumes:
-      # Mounts your local files into the container
+
       - ./airflow_dags:/opt/airflow/dags
+
       - /var/run/docker.sock:/var/run/docker.sock
-      # ‼️ ACTION: Make sure this path is correct for your machine
+
       - /Users/prakharsingh/Documents/project/dw-project/majorproject/adverse_event_pipeline/dbt_project:/opt/airflow/dbt_project
+
+      - airflow-logs:/opt/airflow/logs
+      - airflow-plugins:/opt/airflow/plugins
+
     ports:
       - "8080:8080"
+
+
     command: >-
-      bash -c "airflow db migrate && airflow users create -u admin -p admin -e admin@example.com -f Admin -l User -r Admin && exec airflow webserver & exec airflow scheduler"
-    
-    # ‼️ FIX 2: Point to the correct service name 'postgres'
+      bash -c "airflow db migrate &&
+               airflow users create -u ${_AIRFLOW_WWW_USER_USERNAME:-admin} -p ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+               -e admin@example.com -f Admin -l User -r Admin &&
+               exec airflow webserver & exec airflow scheduler"
+
+
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exit 0"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     depends_on:
       - postgres
 
-  postgres: # <-- This is the service name
+    labels:
+      com.dwproject.role: "airflow"
+      com.dwproject.stack: "ae-pipeline"
+
+  postgres:
     image: postgres:13
-    container_name: airflow-postgres # This is just the container's friendly name
+    container_name: airflow-postgres
     environment:
       - POSTGRES_USER=airflow
       - POSTGRES_PASSWORD=airflow
       - POSTGRES_DB=airflow
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-    networks:
-      - default
+    networks: [default]
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    labels:
+      com.dwproject.role: "postgres"
+      com.dwproject.stack: "ae-pipeline"
 
 volumes:
   postgres-db-volume:
+  airflow-logs:
+  airflow-plugins:
 
 networks:
   default:
