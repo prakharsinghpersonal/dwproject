@@ -21,6 +21,9 @@ services:
       
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
       - AIRFLOW__CORE__FERNET_KEY=yHA5esoGC3jwkyWu-cTv_iTQeioe1tXanl3RtDVnOBk=
+      
+      # Host path for dbt project (needed when Docker runs inside container)
+      - DBT_PROJECT_HOST_PATH=/Users/prakharsingh/Documents/project/dw-project/majorproject/adverse_event_pipeline/dbt_project
     volumes:
       # Mounts your local files into the container
       - ./airflow_dags:/opt/airflow/dags

@@ -9,7 +9,7 @@ from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
 BATCH_SIZE = 500
-MAX_REPORTS = 20000
+MAX_REPORTS = 500
 SILVER_QUERY = (
     "SELECT primaryid, drug_concept_ids, reaction_concept_ids "
     "FROM SILVER_REPORTS_AGGREGATED "
@@ -128,7 +128,7 @@ def fetch_data_from_snowflake(sf_conn) -> List[Dict[str, Any]]:
         ARRAY_TO_STRING(reaction_concept_ids, ',') AS reaction_ids_str
     FROM
         SILVER_REPORTS_AGGREGATED
-    LIMIT 2000;
+    LIMIT 500;
     """
 
     cur = sf_conn.cursor(snowflake.connector.DictCursor)

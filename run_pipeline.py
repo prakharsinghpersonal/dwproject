@@ -101,13 +101,25 @@ def run_full_pipeline():
             'dashboard_data.csv',
         ]
         for filename in outputs:
-            subprocess.run(
-                ['docker', 'cp', f'{ANALYSIS_CONTAINER_NAME}:/app/output/{filename}', '.'],
+            # Copy to output directory
+            os.makedirs('output', exist_ok=True)
+            dest_path = os.path.join('output', filename)
+            result = subprocess.run(
+                ['docker', 'cp', f'{ANALYSIS_CONTAINER_NAME}:/app/output/{filename}', dest_path],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            print(f"✅ Copied {filename}")
+            # Verify the copy was successful for statistical_analysis.csv
+            if filename == 'statistical_analysis.csv':
+                import pandas as pd
+                verify_df = pd.read_csv(dest_path)
+                if 'DRUG_ID' in verify_df.columns:
+                    print(f"✅ Copied {filename} (DRUG_ID verified)")
+                else:
+                    print(f"⚠️  WARNING: {filename} copied but DRUG_ID not found in local file!")
+            else:
+                print(f"✅ Copied {filename}")
     except subprocess.CalledProcessError as exc:
         print(f"⚠️  Warning: Could not copy results: {exc.stderr}")
     finally:

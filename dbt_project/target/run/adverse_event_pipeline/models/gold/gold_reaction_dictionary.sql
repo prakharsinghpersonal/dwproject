@@ -8,19 +8,20 @@ create or replace transient table PHARMACOVIGILANCE.PUBLIC.gold_reaction_diction
     
     as (
 
-
-
+WITH relevant_reaction_ids AS (
+    -- Get all reaction IDs from your final table
+    SELECT REACTION_1 AS concept_id FROM PHARMACOVIGILANCE.PUBLIC.gold_contingency_table
+    UNION
+    SELECT REACTION_2 AS concept_id FROM PHARMACOVIGILANCE.PUBLIC.gold_contingency_table
+)
+-- Creates a "dictionary" for your reaction names
 SELECT DISTINCT
-    b.outcome_concept_id,
-    b.REACTION_NAME
-FROM
-    PHARMACOVIGILANCE.PUBLIC.stg_bronze_outcome AS b
-WHERE
-    b.outcome_concept_id IN (
-        SELECT reaction_1 FROM PHARMACOVIGILANCE.PUBLIC.gold_contingency_table
-        UNION
-        SELECT reaction_2 FROM PHARMACOVIGILANCE.PUBLIC.gold_contingency_table
-    )
+    src.outcome_concept_id,
+    src.pt AS reaction_name
+FROM 
+    PHARMACOVIGILANCE.PUBLIC.BRONZE_OUTCOME AS src
+JOIN
+    relevant_reaction_ids AS rel ON src.outcome_concept_id = rel.concept_id
     )
 ;
 

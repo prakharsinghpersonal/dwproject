@@ -1,8 +1,33 @@
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.snowflake.operators.snowflake import SnowflakeOperator
 from datetime import datetime
+import sys
+import os
+import importlib.util
+
+# Get the directory where this DAG file is located
+dag_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, dag_dir)
+
+# Import the task functions using importlib for better compatibility
+def import_task_module(module_name):
+    """Import a module from the same directory as this DAG file."""
+    module_path = os.path.join(dag_dir, f"{module_name}.py")
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Import task modules
+run_dbt_task_module = import_task_module("run_dbt_task")
+run_neo4j_task_module = import_task_module("run_neo4j_task")
+run_analysis_task_module = import_task_module("run_analysis_task")
+
+# Get the functions
+run_dbt_models = run_dbt_task_module.run_dbt_models
+load_to_neo4j = run_neo4j_task_module.load_to_neo4j
+run_final_analysis = run_analysis_task_module.run_final_analysis
 
 COPY_DRUG_SQL = """
 COPY INTO PHARMACOVIGILANCE.PUBLIC.BRONZE_DRUG
@@ -34,50 +59,20 @@ with DAG(
         snowflake_conn_id='snowflake_default',
     )
 
-    run_dbt_models = BashOperator(
+    run_dbt_models_task = PythonOperator(
         task_id='run_dbt_models',
-        bash_command=(
-            "cd /opt/airflow/dbt_project && "
-            "dbt run --profiles-dir . --vars '{"
-            "\"SNOWFLAKE_USER\":\"{{ var.value.SNOWFLAKE_USER }}\"," 
-            "\"SNOWFLAKE_PASSWORD\":\"{{ var.value.SNOWFLAKE_PASSWORD }}\"," 
-            "\"SNOWFLAKE_ACCOUNT\":\"{{ var.value.SNOWFLAKE_ACCOUNT }}\"}'"
-        ),
-        env={
-            'SNOWFLAKE_USER': '{{ var.value.SNOWFLAKE_USER }}',
-            'SNOWFLAKE_PASSWORD': '{{ var.value.SNOWFLAKE_PASSWORD }}',
-            'SNOWFLAKE_ACCOUNT': '{{ var.value.SNOWFLAKE_ACCOUNT }}',
-            'SNOWFLAKE_WAREHOUSE': '{{ var.value.SNOWFLAKE_WAREHOUSE }}',
-            'SNOWFLAKE_DATABASE': '{{ var.value.SNOWFLAKE_DATABASE }}',
-            'SNOWFLAKE_SCHEMA': '{{ var.value.SNOWFLAKE_SCHEMA }}',
-        },
+        python_callable=run_dbt_models,
     )
 
-    load_to_neo4j = DockerOperator(
+    load_to_neo4j_task = PythonOperator(
         task_id='load_to_neo4j',
-        image='neo4j-loader:latest',
-        auto_remove=True,
-        environment={
-            'SNOWFLAKE_USER': '{{ var.value.SNOWFLAKE_USER }}',
-            'SNOWFLAKE_PASSWORD': '{{ var.value.SNOWFLAKE_PASSWORD }}',
-            'SNOWFLAKE_ACCOUNT': '{{ var.value.SNOWFLAKE_ACCOUNT }}',
-            'NEO4J_URI': '{{ var.value.NEO4J_URI }}',
-            'NEO4J_PASSWORD': '{{ var.value.NEO4J_PASSWORD }}',
-            'NEO4J_USERNAME': 'neo4j',
-            'NEO4J_DATABASE': 'neo4j',
-        },
+        python_callable=load_to_neo4j,
     )
 
-    run_final_analysis = DockerOperator(
+    run_final_analysis_task = PythonOperator(
         task_id='run_final_analysis',
-        image='analysis-runner:latest',
-        auto_remove=True,
-        environment={
-            'SNOWFLAKE_USER': '{{ var.value.SNOWFLAKE_USER }}',
-            'SNOWFLAKE_PASSWORD': '{{ var.value.SNOWFLAKE_PASSWORD }}',
-            'SNOWFLAKE_ACCOUNT': '{{ var.value.SNOWFLAKE_ACCOUNT }}',
-        },
+        python_callable=run_final_analysis,
     )
 
-    [copy_bronze_drug, copy_bronze_outcome] >> run_dbt_models
-    run_dbt_models >> [load_to_neo4j, run_final_analysis]
+    [copy_bronze_drug, copy_bronze_outcome] >> run_dbt_models_task
+    run_dbt_models_task >> [load_to_neo4j_task, run_final_analysis_task]

@@ -1,0 +1,103 @@
+# Adverse Event Pipeline - Comprehensive Project Instructions
+
+## 1. Project Overview
+This project is an end-to-end pharmacovigilance pipeline designed to identify statistically significant associations between drugs and adverse reactions (syndromes) using the FAERS database. It leverages a modern data stack (MDS) to process over 30 million records, transforming raw data into actionable insights visualized in an interactive dashboard.
+
+## 2. Architecture & Data Flow
+The pipeline follows a "Medallion Architecture" (Bronze -> Silver -> Gold) orchestrated by Airflow.
+
+**Flow:**
+1.  **Ingestion (S3 -> Snowflake)**: Raw data is loaded from S3 into Snowflake `BRONZE` tables.
+2.  **Transformation (dbt)**:
+    -   **Bronze**: Raw staging views (`stg_bronze_drug`, `stg_bronze_outcome`).
+    -   **Silver**: Cleaned and aggregated data (`silver_reports_aggregated`).
+    -   **Gold**: Analytical tables (`gold_contingency_table`, `gold_drug_dictionary`).
+3.  **Graph Analysis (Neo4j)**: Gold data is loaded into Neo4j to model Drug-Reaction relationships.
+4.  **Statistical Analysis (Python)**: Fisher's Exact Test and Louvain Community Detection run on the graph/relational data to find significant pairs.
+5.  **Visualization (Streamlit)**: Interactive dashboard to explore findings.
+
+## 3. Technology Stack & Justification
+-   **Snowflake**: Cloud data warehouse for scalable storage and compute. Handles the heavy lifting of 30M+ rows.
+-   **dbt (data build tool)**: Handles SQL transformations. Enables version control, testing, and modularity (Bronze/Silver/Gold).
+-   **Airflow**: Orchestrates the workflow. Manages dependencies and retries.
+-   **Neo4j**: Graph database. Essential for analyzing complex many-to-many relationships between drugs and reactions.
+-   **Docker**: Containerization. Ensures reproducibility by isolating Airflow, dbt, Neo4j loader, and Analysis runner in their own environments.
+-   **Streamlit**: Rapid dashboard development. Allows non-technical users to interact with complex statistical results.
+
+## 4. Step-by-Step Workflow & Commands
+
+### Prerequisites
+-   Docker Desktop running.
+-   `.env` file configured with Snowflake and Neo4j credentials.
+-   Python dependencies installed (`pip install -r requirements.txt`).
+
+### Step 1: Start Infrastructure (Docker)
+Start Airflow and Postgres containers.
+```bash
+docker-compose up -d
+```
+*Verify*: Run `docker ps` to see `airflow-1` and `airflow-postgres`.
+
+### Step 2: Run the Pipeline
+This single script orchestrates the entire flow:
+1.  Loads environment variables.
+2.  Runs dbt models via Docker (`dbt-runner`).
+3.  Runs Neo4j loader via Docker (`neo4j-loader`).
+4.  Runs Statistical Analysis via Docker (`analysis-runner`).
+
+```bash
+./run_pipeline.sh
+```
+
+**Under the Hood (What happens):**
+-   **dbt**: `dbt run --project-dir /dbt_project`
+-   **Neo4j**: `python /app/load_data.py` (inside container)
+-   **Analysis**: `python /app/analysis.py` (inside container)
+
+### Step 3: Monitor Orchestration (Airflow)
+Access the Airflow UI to see the DAG `drug_syndrome_pipeline_s3_v1`.
+-   **URL**: http://localhost:8080
+-   **User/Pass**: `admin` / `admin`
+
+**Key Tasks in DAG:**
+-   `copy_bronze_drug_from_s3`: Runs `COPY INTO` SQL command.
+-   `run_dbt_models`: Triggers dbt transformation.
+-   `load_to_neo4j`: Triggers graph loading.
+-   `run_final_analysis`: Triggers statistical modeling.
+
+### Step 4: Visualize Results (Streamlit)
+Launch the dashboard to explore the 46,000+ significant pairs found.
+```bash
+streamlit run dashboard.py
+```
+-   **URL**: http://localhost:8501
+
+## 5. Key Queries & Logic
+
+### Data Ingestion (Snowflake)
+Data is loaded from a public S3 bucket using Snowflake's `COPY INTO` command.
+```sql
+COPY INTO PHARMACOVIGILANCE.PUBLIC.BRONZE_DRUG
+FROM @aeolus_s3_external_stage/standard_case_drug.tsv
+ON_ERROR = 'SKIP_FILE';
+```
+
+### Statistical Analysis (Fisher's Exact Test)
+We calculate the **Odds Ratio** to measure association strength.
+-   **N11**: Count of reports with BOTH Drug A and Reaction B.
+-   **N10**: Count of reports with Drug A but NOT Reaction B.
+-   **N01**: Count of reports with Reaction B but NOT Drug A.
+-   **N00**: Count of reports with NEITHER.
+
+*Logic*: If Odds Ratio > 1 and p-value < 0.05 (adjusted), the association is significant.
+
+## 6. Q&A Preparation
+
+**Q: Why use Neo4j if you have Snowflake?**
+A: Snowflake is excellent for aggregations, but Neo4j excels at graph traversals. If we want to find "communities" of reactions (syndromes) that frequently co-occur across multiple drugs, a graph algorithm like Louvain is much more efficient and natural in Neo4j than recursive SQL joins.
+
+**Q: Why Docker?**
+A: It solves "it works on my machine". The `analysis-runner` requires specific Python libraries (scipy, networkx) and the `dbt-runner` needs dbt-snowflake. Docker packages these dependencies so the pipeline runs identically on any machine.
+
+**Q: How do you handle scale?**
+A: Snowflake handles the storage and compute elasticity. We use `dbt` to push the transformation logic TO Snowflake, so we aren't pulling 30M rows into Python until the final aggregated step (Gold layer), which is much smaller.

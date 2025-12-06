@@ -1,21 +1,19 @@
 
 
-WITH drug_events AS (
-    SELECT primaryid, standard_concept_id
-    FROM PHARMACOVIGILANCE.PUBLIC.stg_bronze_drug
-),
-outcome_events AS (
-    SELECT primaryid, outcome_concept_id
-    FROM PHARMACOVIGILANCE.PUBLIC.stg_bronze_outcome
-)
-
+-- This query builds the exact structure you need for Neo4j.
+-- It joins, groups by report, and collects drugs/reactions into arrays.
 SELECT
-    de.primaryid,
-    de.standard_concept_id AS drug_id,
-    ARRAY_AGG(DISTINCT oe.outcome_concept_id) AS reaction_concept_ids
+    t1.primaryid,
+    -- Collect a list of unique drug IDs for each report
+    ARRAY_AGG(DISTINCT t1.standard_concept_id) AS drug_concept_ids,
+    -- Collect a list of unique reaction IDs for each report
+    ARRAY_AGG(DISTINCT t2.outcome_concept_id) AS reaction_concept_ids
 FROM
-    drug_events AS de
+    PHARMACOVIGILANCE.PUBLIC.BRONZE_DRUG AS t1
 JOIN
-    outcome_events AS oe ON de.primaryid = oe.primaryid
+    PHARMACOVIGILANCE.PUBLIC.BRONZE_OUTCOME AS t2 ON t1.primaryid = t2.primaryid
+WHERE
+    t1.standard_concept_id IS NOT NULL
+    AND t2.outcome_concept_id IS NOT NULL
 GROUP BY
-    de.primaryid, de.standard_concept_id
+    t1.primaryid

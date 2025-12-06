@@ -1,6 +1,7 @@
 import os
 import sys
 
+import duckdb
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -11,8 +12,8 @@ from statsmodels.stats.multitest import multipletests
 
 OUTPUT_DIR = "/app/output"
 TOP_DRUG_LIMIT = 5
-TOP_PER_DRUG_PAIR_LIMIT = 1000
-TOP_N_RESULTS_TO_SAVE = 1000
+TOP_PER_DRUG_PAIR_LIMIT = 10000
+TOP_N_RESULTS_TO_SAVE = 10000
 
 
 def get_db_connection():
@@ -83,11 +84,13 @@ def run_analysis():
         """
     else:
         print("No DRUG_ID column found; running global top-N contingency query.")
+        # Fetch more rows to ensure we have enough for 10k results after filtering
+        fetch_limit = TOP_N_RESULTS_TO_SAVE * 2  # Fetch 2x to account for filtering
         contingency_query = f"""
             SELECT *
             FROM PHARMACOVIGILANCE.PUBLIC.GOLD_CONTINGENCY_TABLE
             ORDER BY N11 DESC
-            LIMIT {TOP_N_RESULTS_TO_SAVE}
+            LIMIT {fetch_limit}
         """
 
     # Use a DBAPI cursor to fetch rows and build a DataFrame to avoid pandas.read_sql DB-API edge cases
@@ -146,78 +149,106 @@ def run_analysis():
     df_dict = pd.read_sql(dict_query, conn)
     df_dict.columns = df_dict.columns.str.upper()
 
-    # Merge reaction names (this is safe)
-    df_merged = df_significant.merge(
-        df_dict[['OUTCOME_CONCEPT_ID', 'REACTION_NAME']],
-        left_on='REACTION_1',
-        right_on='OUTCOME_CONCEPT_ID',
-        how='left',
-    ).rename(columns={'REACTION_NAME': 'Reaction_1_Name'}).drop(columns=['OUTCOME_CONCEPT_ID'])
-
-    df_merged = df_merged.merge(
-        df_dict[['OUTCOME_CONCEPT_ID', 'REACTION_NAME']],
-        left_on='REACTION_2',
-        right_on='OUTCOME_CONCEPT_ID',
-        how='left',
-    ).rename(columns={'REACTION_NAME': 'Reaction_2_Name'}).drop(columns=['OUTCOME_CONCEPT_ID'])
-
-    # Only merge drug names if the DRUG_ID column exists
+    # Load drug dictionary if DRUG_ID column exists
     df_drug = None
     if has_drug_id_column:
-        print("Merging drug names...")
+        print("Loading drug dictionary...")
         drug_dict_query = "SELECT drug_id, drug_name FROM GOLD_DRUG_DICTIONARY"
         df_drug = pd.read_sql(drug_dict_query, conn)
         df_drug.columns = df_drug.columns.str.lower()
-        
-        df_merged = df_merged.merge(
-            df_drug[['drug_id', 'drug_name']],
-            left_on='DRUG_ID',
-            right_on='drug_id',
-            how='left',
-        ).rename(columns={'drug_name': 'Drug_Name_Full'})
-
-        df_merged = df_merged.rename(
-            columns={
-                'DRUG_ID': 'drug_id',
-                'REACTION_1': 'reaction_1',
-                'REACTION_2': 'reaction_2',
-            }
-        )
-        df_merged['drug_id'] = df_merged['drug_id'].astype(str)
-    else:
-        print("Skipping drug name merge (DRUG_ID not present).")
-        # Add placeholder columns so the script doesn't break later
-        df_merged['drug_id'] = 'N/A'
-        df_merged['Drug_Name_Full'] = 'N/A (Global)'
-        df_merged = df_merged.rename(
-            columns={
-                'REACTION_1': 'reaction_1',
-                'REACTION_2': 'reaction_2',
-            }
-        )
 
     conn.close() # Connection closed after all queries are done
 
-    df_dashboard = (
-        df_merged.sort_values('hybrid_score', ascending=False)
-        .head(TOP_N_RESULTS_TO_SAVE)
-        .copy()
-    )
+    # 🚀 NEW: Use DuckDB for Heavy Lifting (Memory-Efficient Joins & Sorting)
+    print("🚀 Using DuckDB to optimize heavy data processing (joins and sorting)...")
+    print("   This prevents Out-of-Memory crashes when processing large datasets.")
+    
+    # DuckDB can query Pandas DataFrames directly!
+    # We use it here to perform the joins and sorting which are memory-intensive in Pandas
+    
+    # Create in-memory DuckDB connection
+    con = duckdb.connect(database=':memory:')
+    
+    # Normalize column names in df_significant for consistent access
+    if 'reaction_1' not in df_significant.columns:
+        if 'REACTION_1' in df_significant.columns:
+            df_significant['reaction_1'] = df_significant['REACTION_1']
+            df_significant['reaction_2'] = df_significant['REACTION_2']
+            if 'DRUG_ID' in df_significant.columns:
+                df_significant['drug_id'] = df_significant['DRUG_ID']
+    
+    # Register dataframes as virtual tables in DuckDB
+    con.register('significant_pairs', df_significant)
+    con.register('reaction_dict', df_dict)
+    
+    # Build the SQL query for DuckDB
+    if has_drug_id_column and df_drug is not None:
+        con.register('drug_dict', df_drug)
+        dashboard_query = f"""
+        SELECT 
+            CAST(s.drug_id AS VARCHAR) as drug_id,
+            d_drug.drug_name as Drug_Name_Full,
+            r1.REACTION_NAME as Reaction_1_Name,
+            r2.REACTION_NAME as Reaction_2_Name,
+            s.N11 as co_occurrence,
+            s.odds_ratio,
+            s.p_adj as p_value,
+            CAST(s.reaction_1 AS BIGINT) as reaction_1,
+            CAST(s.reaction_2 AS BIGINT) as reaction_2,
+            (LN(s.odds_ratio + 1) * s.N11) as hybrid_score
+        FROM significant_pairs s
+        LEFT JOIN reaction_dict r1 ON s.reaction_1 = r1.OUTCOME_CONCEPT_ID
+        LEFT JOIN reaction_dict r2 ON s.reaction_2 = r2.OUTCOME_CONCEPT_ID
+        LEFT JOIN drug_dict d_drug ON CAST(s.drug_id AS VARCHAR) = CAST(d_drug.drug_id AS VARCHAR)
+        ORDER BY hybrid_score DESC
+        LIMIT {TOP_N_RESULTS_TO_SAVE}
+        """
+    else:
+        # No drug dictionary - use placeholder
+        dashboard_query = f"""
+        SELECT 
+            'N/A' as drug_id,
+            'N/A (Global)' as Drug_Name_Full,
+            r1.REACTION_NAME as Reaction_1_Name,
+            r2.REACTION_NAME as Reaction_2_Name,
+            s.N11 as co_occurrence,
+            s.odds_ratio,
+            s.p_adj as p_value,
+            CAST(s.reaction_1 AS BIGINT) as reaction_1,
+            CAST(s.reaction_2 AS BIGINT) as reaction_2,
+            (LN(s.odds_ratio + 1) * s.N11) as hybrid_score
+        FROM significant_pairs s
+        LEFT JOIN reaction_dict r1 ON s.reaction_1 = r1.OUTCOME_CONCEPT_ID
+        LEFT JOIN reaction_dict r2 ON s.reaction_2 = r2.OUTCOME_CONCEPT_ID
+        ORDER BY hybrid_score DESC
+        LIMIT {TOP_N_RESULTS_TO_SAVE}
+        """
+    
+    # Execute DuckDB query and get result back to Pandas
+    df_dashboard = con.execute(dashboard_query).df()
+    
+    # Close DuckDB connection
+    con.close()
+    
+    # Ensure drug_id is string type
+    if 'drug_id' in df_dashboard.columns:
+        df_dashboard['drug_id'] = df_dashboard['drug_id'].astype(str)
+    
+    # Generate Chart Label
     df_dashboard['Chart_Label'] = df_dashboard['Reaction_1_Name'].fillna(
         df_dashboard['reaction_1'].astype(str)
     )
-    print(f"Prepared lightweight dashboard dataset with {len(df_dashboard)} rows.")
+    
+    print(f"✅ DuckDB processing complete. Prepared {len(df_dashboard)} rows for dashboard.")
+    print(f"   Memory-efficient joins and sorting handled by DuckDB OLAP engine.")
 
     print("Running Louvain Community Detection...")
 
-    # Normalize reaction column names in df_significant to lowercase keys used below
+    # Column names should already be normalized from DuckDB section above
+    # Verify we have reaction columns
     if 'reaction_1' not in df_significant.columns:
-        if 'REACTION_1' in df_significant.columns and 'REACTION_2' in df_significant.columns:
-            df_significant['reaction_1'] = df_significant['REACTION_1']
-            df_significant['reaction_2'] = df_significant['REACTION_2']
-        else:
-            print("No reaction columns found in contingency results; skipping community detection.")
-            communities = []
+        print("No reaction columns found in contingency results; skipping community detection.")
+        communities = []
 
     G = nx.Graph()
     for _, row in df_significant.iterrows():
